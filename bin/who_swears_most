@@ -1,0 +1,71 @@
+#!/usr/bin/env ruby
+
+# Computes the total word count of all the tweets.
+# For an explanation of how mapreduce works in Riak, check out this page:
+# https://wiki.basho.com/display/RIAK/Loading+Data+and+Running+MapReduce+Queries
+
+require 'rubygems'
+require 'bundler'
+Bundler.setup 
+
+require 'ripple'
+require 'json'
+require 'trollop'
+require 'lib/tweet'
+
+
+# Simple example of a map function.
+# All it does is pull the text out of a tweet.
+# The exception handling is to deal with a bug in SpiderMonkey (Riak's
+# JavaScript engine) where the JSON parser chokes on strings containing
+# the \r newline escape.
+map_func_word_count_per_tweet = <<-JAVASCRIPT
+  function(value, keyData, arg) {
+    var tweet, swear_count = null;
+    try {
+      tweet = Riak.mapValuesJson(value)[0];
+      swear_words = /fuck|bastard|bitch|shit|crap|arse|ass|cunt|penis|dick|cock|nob|vag|abbot|anus|tit|boob|balls|pussy|wanker|twat|bollock/g;
+      swear_count = tweet["text"].match(swear_words);
+      var result = {};
+      result[tweet["user"]["screen_name"]] = swear_count;
+      return [ result ];
+    } catch (e) {
+      return [ ];
+    }
+  };
+JAVASCRIPT
+
+reduce_func_total_count = <<-JAVASCRIPT
+  function(values) {
+    return [ values.reduce(
+      function(acc,item) {
+        for (var k in item) {
+          var current = 0;
+          if (acc[k]) {
+            current = acc[k];
+          }
+          acc[k] = current + item[k];
+        }
+        return acc;
+      }, 
+      { }
+    ) ];
+  };
+JAVASCRIPT
+
+config = YAML.load(File.read('config/ripple.yml'))['development']
+
+client = Riak::Client.new :host => config['host'], :port => config['port']
+
+results = Riak::MapReduce.new(client).
+  add("tweets").
+  #timeout(18000).
+  map(map_func_word_count_per_tweet).
+  reduce(reduce_func_total_count, :keep => true).
+  run
+    
+results.each {|r| puts r.inspect }
+
+
+
+
